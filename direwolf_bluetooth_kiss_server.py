@@ -27,6 +27,7 @@ APRS_DESTINATION = 'APRS'
 APRS_PATH = ['WIDE1-1', 'WIDE2-1']
 
 DEBUG_MODE = False
+DELIMITED_MODE = False   # True = split messages by newline, False = process raw chunks
 
 # --- AX.25 / KISS helpers ---
 def encode_ax25_address(callsign_str, is_destination=False, is_last=False, is_command=False):
@@ -96,15 +97,26 @@ def start_rfcomm_reader():
                     data = rf.read(1024)
                     if not data:
                         continue
-                    buffer += data
-                    while b'\n' in buffer:
-                        line, _, buffer = buffer.partition(b'\n')
-                        line_str = line.decode(errors='ignore').strip()
+
+                    if DELIMITED_MODE:
+                        buffer += data
+                        while b'\n' in buffer:
+                            line, _, buffer = buffer.partition(b'\n')
+                            line_str = line.decode(errors='ignore').strip()
+                            if line_str:
+                                print(f"[ANDROID] {line_str}")
+                                if ':' in line_str:
+                                    dest, msg = line_str.split(':', 1)
+                                    process_and_send_message(dest.strip(), msg.strip())
+                    else:
+                        # raw mode: process chunk immediately
+                        line_str = data.decode(errors='ignore').strip()
                         if line_str:
-                            print(f"[ANDROID] {line_str}")
+                            print(f"[ANDROID RAW] {line_str}")
                             if ':' in line_str:
-                                dest,msg = line_str.split(':',1)
+                                dest, msg = line_str.split(':', 1)
                                 process_and_send_message(dest.strip(), msg.strip())
+
     t = threading.Thread(target=reader, daemon=True)
     t.start()
 
@@ -144,15 +156,15 @@ class SerialProfile(dbus.service.Object):
 
         # fork bridge for bidirectional flow
         pid = os.fork()
-        if pid==0:
+        if pid == 0:
             while True:
-                rlist, _, _ = select.select([master,sock_fd],[],[])
+                rlist, _, _ = select.select([master, sock_fd], [], [])
                 if master in rlist:
-                    data = os.read(master,1024)
-                    if data: os.write(sock_fd,data)
+                    data = os.read(master, 1024)
+                    if data: os.write(sock_fd, data)
                 if sock_fd in rlist:
-                    data = os.read(sock_fd,1024)
-                    if data: os.write(master,data)
+                    data = os.read(sock_fd, 1024)
+                    if data: os.write(master, data)
             os._exit(0)
         else:
             print(f"Bridge process started (pid={pid})")
@@ -165,13 +177,13 @@ class SerialProfile(dbus.service.Object):
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
-    manager = dbus.Interface(bus.get_object('org.bluez','/org/bluez'),'org.bluez.ProfileManager1')
+    manager = dbus.Interface(bus.get_object('org.bluez', '/org/bluez'), 'org.bluez.ProfileManager1')
 
     profile_path = "/aprs/spp/profile"
     profile = SerialProfile(bus, profile_path)
     opts = {
-        "Name":"APRS Gateway",
-        "Role":"server",
+        "Name": "APRS Gateway",
+        "Role": "server",
         "Channel": dbus.UInt16(1),
         "Service": SPP_UUID,
         "AutoConnect": True
@@ -181,5 +193,5 @@ def main():
     loop = GLib.MainLoop()
     loop.run()
 
-if __name__=='__main__':
+if __name__ == '__main__':
     main()
